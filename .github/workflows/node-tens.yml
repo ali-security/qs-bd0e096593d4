@@ -1,18 +1,72 @@
 name: 'Tests: node.js >= 10'
 
-on: [pull_request, push]
+on:
+  workflow_dispatch:
+    inputs:
+      test-filter:
+        description: 'optional tape test-file glob; empty runs the full suite'
+        required: false
+        default: ''
 
 jobs:
   tests:
-    uses: ljharb/actions/.github/workflows/node.yml@main
-    with:
-      range: '>= 10'
-      type: minors
-      command: npm run tests-only
+    name: 'node ${{ matrix.node-version }}'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: [18, 17, 16, 15, 14, 13, 12, 11, 10]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+      # node 11's bundled npm 6.7.0 hangs `npm install` until the job times out
+      - if: matrix.node-version == 11
+        run: npm install -g npm@6
+      - name: 'pin the npm registry to the release date'
+        run: npm config set registry 'https://:2022-06-27T04:49:53.976Z@time-machines-npm.sealsecurity.io/'
+      - run: npm install
+      - run: |
+          if [ -n "${{ inputs.test-filter }}" ]; then
+            npx tape ${{ inputs.test-filter }}
+          else
+            npm run tests-only
+          fi
+
+  pack:
+    name: 'npm pack qs-6.11.0.tgz'
+    needs: [tests]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      # the published tarball was packed with node 18.4.0 / npm 8.12.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 18.4.0
+      - name: 'pin the npm registry to the release date'
+        run: npm config set registry 'https://:2022-06-27T04:49:53.976Z@time-machines-npm.sealsecurity.io/'
+      - run: npm install
+      # The release ran `npm run dist` in prepublishOnly, which `npm pack` never runs,
+      # so regenerate dist/qs.js from lib/ here: any patch to lib/ must reach the
+      # shipped browser bundle. The published bundle inlines get-intrinsic 1.1.1
+      # (the publisher's install predated 1.1.2 of 2022-06-08); pin it so the
+      # regenerated bundle is byte-identical to the release.
+      - run: npm install --no-save get-intrinsic@1.1.1
+      - run: npm run dist
+      - run: npm pack
+      - uses: actions/upload-artifact@v4
+        with:
+          name: qs-6.11.0-tgz
+          path: qs-6.11.0.tgz
+          if-no-files-found: error
 
   node:
     name: 'node >= 10'
     needs: [tests]
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - run: 'echo tests completed'
